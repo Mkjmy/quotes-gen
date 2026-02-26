@@ -1,22 +1,23 @@
 import os
 
+# Get the directory of the current script
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+
 def load_words_from_file(filename):
     """Loads words from a text file, one word per line."""
-    with open(filename, 'r') as f:
+    file_path = os.path.join(DATA_DIR, filename)
+    with open(file_path, 'r') as f:
         return {word.strip().lower() for word in f if word.strip()}
 
 # These print statements are useful for debugging during development,
 # but might be removed in a production pos_tagger.
-print("Loading commonwords.txt for POS Tagger...")
 common_words_raw = load_words_from_file('commonwords.txt')
-print(f"Loaded {len(common_words_raw)} words from commonwords.txt for POS Tagger")
 
-print("Loading words.txt for POS Tagger...")
 all_words_raw = load_words_from_file('words.txt')
-print(f"Loaded {len(all_words_raw)} words from words.txt for POS Tagger")
 
 all_words = all_words_raw.union(common_words_raw)
-print(f"Total unique words in pool for POS Tagger: {len(all_words)}")
+
 
 _FUNC_CANDIDATES = {
     'a', 'an', 'the', 'to', 'in', 'on', 'of', 'and', 'but', 'or', 'if', 'then', 'than', 'as',

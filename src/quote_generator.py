@@ -27,7 +27,6 @@ def load_learned_parameters(filepath="learned_parameters.json"):
                 LEARNED_WORD_ADJACENCY_SCORES = {k: v for k, v in params.get("word_adjacency_scores", {}).items()}
                 LEARNED_POS_ENDING_PROBABILITIES = params.get("pos_ending_probabilities", {})
                 LEARNED_WORD_ENDING_PROBABILITIES = params.get("word_ending_probabilities", {})
-            print(f"Loaded learned parameters from {filepath}")
         except json.JSONDecodeError:
             print(f"Error decoding learned parameters from {filepath}. Using default.")
         except Exception as e:
@@ -279,12 +278,13 @@ if __name__ == "__main__":
     parser.add_argument("--learn", action="store_true", help="Log generated quotes to a file for learning.")
     parser.add_argument("--seed", type=int, help="Provide an integer seed for reproducible quote generation.")
     parser.add_argument("--num_quotes", type=int, default=5, help="Number of quotes to generate.")
-    parser.add_argument("--learned_params", type=str, default="learned_parameters.json", 
+    parser.add_argument("--learned_params", type=str, default="models/learned_parameters.json", 
                         help="Path to learned parameters JSON file.")
     parser.add_argument("--exploration_rate", type=float, default=0.1, 
                         help="Probability (0.0 to 1.0) to ignore learned parameters and use heuristics for novelty.")
     parser.add_argument("--rate", action="store_true", 
                         help="Generate quotes and prompt for immediate interactive rating.") # Changed flag name
+    parser.add_argument("--raw", action="store_true", help="Print only the quote text without labels or headers.")
     args = parser.parse_args()
 
     # Load learned parameters if they exist
@@ -296,7 +296,7 @@ if __name__ == "__main__":
     else:
         random.seed(None) # Initialize with system time for randomness
 
-    LOG_FILE_PATH = "quotes_for_learning.csv"
+    LOG_FILE_PATH = "data/quotes_for_learning.csv"
     
     # Mode: Interactive Rating
     if args.rate: # Changed check
@@ -351,7 +351,11 @@ if __name__ == "__main__":
     
     # Default Mode: Just Generate and Print (no logging)
     else:
-        print(f"\nGenerating {args.num_quotes} quotes:")
+        if not args.raw:
+            print(f"\nGenerating {args.num_quotes} quotes:")
         for i in range(args.num_quotes):
             quote_text = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, exploration_rate=args.exploration_rate) # Pass exploration_rate
-            print(f"Quote {i+1}: {quote_text}")
+            if args.raw:
+                print(quote_text)
+            else:
+                print(f"Quote {i+1}: {quote_text}")

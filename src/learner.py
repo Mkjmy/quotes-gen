@@ -328,9 +328,9 @@ def run_learner(input_csv_path, output_json_path, default_score_good, default_sc
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze rated quotes and learn parameters for quote generation.")
-    parser.add_argument("--input_csv", type=str, default="quotes_for_learning.csv",
+    parser.add_argument("--input_csv", type=str, default="data/quotes_for_learning.csv",
                         help="Path to the CSV file containing quotes and ratings.")
-    parser.add_argument("--output_json", type=str, default="learned_parameters.json",
+    parser.add_argument("--output_json", type=str, default="models/learned_parameters.json",
                         help="Path to save the learned parameters JSON file.")
     parser.add_argument("--score_good", type=float, default=1.0,
                         help="Numeric score for a 'good' rating.")
