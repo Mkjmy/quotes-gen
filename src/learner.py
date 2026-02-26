@@ -62,7 +62,8 @@ def violates_heuristic(prev_pos, current_pos, prev_word):
 
 # --- Main Learner Logic ---
 def run_learner(input_csv_path, output_json_path, default_score_good, default_score_bad,
-                min_confidence_count, ignore_threshold, base_penalty_for_bad_heuristic):
+                min_confidence_count, ignore_threshold, base_penalty_for_bad_heuristic,
+                my_quotes_dir=None):
 
     # Initialize data structures for POS-level learning
     pos_pair_raw_scores = {}
@@ -78,54 +79,84 @@ def run_learner(input_csv_path, output_json_path, default_score_good, default_sc
 
     processed_quotes = []
 
-    # Load and parse CSV
-    if not os.path.exists(input_csv_path):
-        print(f"Error: Input CSV file not found at {input_csv_path}")
-        return
+    # 1. Load quotes from CSV
+    if os.path.exists(input_csv_path):
+        all_quotes_from_csv_raw = []
+        with open(input_csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                all_quotes_from_csv_raw.append(row)
 
-    # Read all quotes from the CSV, will reorder later
-    all_quotes_from_csv_raw = []
-    with open(input_csv_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            all_quotes_from_csv_raw.append(row)
+        for row in all_quotes_from_csv_raw:
+            quote_id = row['id']
+            quote_text = row['quote']
+            rating_str = row['rating'].strip().lower()
 
-    for row in all_quotes_from_csv_raw:
-        quote_id = row['id']
-        quote_text = row['quote']
-        rating_str = row['rating'].strip().lower()
-
-        if rating_str == 'no_rating':
-            continue # Skip unrated quotes for learning calculations
-        
-        # Convert rating to numeric score based on '+' or '-'
-        sentence_score = 0
-        if rating_str == '+':
-            sentence_score = default_score_good
-        elif rating_str == '-':
-            sentence_score = default_score_bad
-        else:
-            print(f"Warning: Unknown rating '{rating_str}' for quote ID {quote_id}. Skipping for learning calculations.")
-            continue
-        
-        # Tokenize quote text to get raw words (handling comma)
-        cleaned_text = quote_text.replace('.', '') # Remove final period
-        raw_words_list = []
-        for token in cleaned_text.split():
-            if token.endswith(','):
-                raw_words_list.append(token[:-1])
-                raw_words_list.append(',')
+            if rating_str == 'no_rating':
+                continue # Skip unrated quotes for learning calculations
+            
+            # Convert rating to numeric score based on '+' or '-'
+            sentence_score = 0
+            if rating_str == '+':
+                sentence_score = default_score_good
+            elif rating_str == '-':
+                sentence_score = default_score_bad
             else:
-                raw_words_list.append(token)
+                print(f"Warning: Unknown rating '{rating_str}' for quote ID {quote_id}. Skipping for learning calculations.")
+                continue
+            
+            # Tokenize quote text to get raw words (handling comma)
+            cleaned_text = quote_text.replace('.', '') # Remove final period
+            raw_words_list = []
+            for token in cleaned_text.split():
+                if token.endswith(','):
+                    raw_words_list.append(token[:-1])
+                    raw_words_list.append(',')
+                else:
+                    raw_words_list.append(token)
 
-        if not raw_words_list:
-            continue
+            if not raw_words_list:
+                continue
 
-        processed_quotes.append({
-            'id': quote_id,
-            'raw_words': raw_words_list,
-            'sentence_score': sentence_score
-        })
+            processed_quotes.append({
+                'id': quote_id,
+                'raw_words': raw_words_list,
+                'sentence_score': sentence_score
+            })
+    else:
+        print(f"Note: Input CSV file not found at {input_csv_path}")
+
+    # 2. Load "Real" quotes from user directory
+    if my_quotes_dir and os.path.exists(my_quotes_dir):
+        print(f"Scanning for real quotes in {my_quotes_dir}...")
+        real_quotes_count = 0
+        for filename in os.listdir(my_quotes_dir):
+            if filename.endswith(".txt"):
+                file_path = os.path.join(my_quotes_dir, filename)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        quote_text = line.strip()
+                        if not quote_text:
+                            continue
+                        
+                        # Tokenize
+                        cleaned_text = quote_text.replace('.', '')
+                        raw_words_list = []
+                        for token in cleaned_text.split():
+                            if token.endswith(','):
+                                raw_words_list.append(token[:-1])
+                                raw_words_list.append(',')
+                            else:
+                                raw_words_list.append(token)
+                        
+                        if raw_words_list:
+                            processed_quotes.append({
+                                'id': f"real_{real_quotes_count}",
+                                'raw_words': raw_words_list,
+                                'sentence_score': default_score_good * 2.0 # Give real quotes higher weight
+                            })
+                            real_quotes_count += 1
+        print(f"  Added {real_quotes_count} real quotes for learning.")
 
     # --- Iterate through rated quotes and apply learning principles ---
     for quote_data in processed_quotes:
@@ -342,6 +373,8 @@ if __name__ == "__main__":
                         help="Absolute effective score threshold below which a pair/POS is ignored.")
     parser.add_argument("--base_penalty_bad_heuristic", type=float, default=0.5,
                         help="Penalty applied to reward if a pair violates known bad heuristics.")
+    parser.add_argument("--my_quotes_dir", type=str, default="data/my_quotes",
+                        help="Path to directory containing user-provided real quotes (*.txt).")
     
     args = parser.parse_args()
 
@@ -352,5 +385,6 @@ if __name__ == "__main__":
         args.score_bad,
         args.min_confidence_count,
         args.ignore_threshold,
-        args.base_penalty_bad_heuristic
+        args.base_penalty_bad_heuristic,
+        args.my_quotes_dir
     )
