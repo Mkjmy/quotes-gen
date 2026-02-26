@@ -10,6 +10,21 @@ import csv # Import csv module
 from pos_tagger import all_words, assign_role_by_pattern, FUNC, PRON, MODAL, DET
 
 
+# --- Rhyme Indexing ---
+RHYME_INDEX = {}
+
+def build_rhyme_index():
+    global RHYME_INDEX
+    for word in all_words:
+        if len(word) >= 3:
+            suffix = word[-2:].lower()
+            if suffix not in RHYME_INDEX:
+                RHYME_INDEX[suffix] = []
+            RHYME_INDEX[suffix].append(word)
+
+build_rhyme_index()
+
+
 # --- Learned Parameters (Initially empty, to be loaded) ---
 LEARNED_POS_ADJACENCY_SCORES = {}
 LEARNED_WORD_ADJACENCY_SCORES = {}
@@ -120,7 +135,7 @@ def check_ending_viability(last_word, last_pos, exploration_rate): # Added explo
 
 
 # --- Phrase Generation Logic ---
-def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_word=20, is_second_part=False, exploration_rate=0.0): # Added exploration_rate
+def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_word=20, is_second_part=False, exploration_rate=0.0, rhyme_probability=0.2): # Added rhyme_probability
     phrase = []
     prev_word = None
     prev_pos = None
@@ -137,6 +152,36 @@ def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_wo
 
         while attempt_count < max_attempts_per_word:
             attempt_count += 1
+            
+            word_candidate = None
+            candidate_pos = None
+            
+            # --- Rhyme Prioritization (New Feature) ---
+            # Use rhyme_probability to decide whether to even attempt rhyming for this word
+            if prev_word and len(prev_word) >= 3 and random.random() < rhyme_probability:
+                suffix = prev_word[-2:].lower()
+                if suffix in RHYME_INDEX:
+                    # Attempt to find a suitable rhyming word up to 10 times
+                    for _ in range(10):
+                        temp_candidate = random.choice(RHYME_INDEX[suffix])
+                        if temp_candidate == prev_word:
+                            continue
+                        
+                        temp_pos = assign_role_by_pattern(temp_candidate)
+                        
+                        # Check if this rhyming candidate fits the logic
+                        is_allowed, probability = check_adjacency(prev_word, prev_pos, temp_candidate, temp_pos, exploration_rate)
+                        if is_allowed and random.random() < probability:
+                            word_candidate = temp_candidate
+                            candidate_pos = temp_pos
+                            break # Found a suitable rhyming word
+            
+            if word_candidate:
+                current_word = word_candidate
+                current_pos = candidate_pos
+                break # Exit the attempt loop as we found our word
+
+            # --- Fallback: Original Random Choice ---
             word_candidate = random.choice(word_pool_list)
 
             if prev_word is not None and word_candidate == prev_word:
@@ -175,7 +220,7 @@ def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_wo
                 current_recursion_depth += 1
                 if current_recursion_depth > MAX_RECURSION_DEPTH:
                     raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate) # Pass exploration_rate
+                return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
 
         phrase.append(current_word)
         prev_word = current_word
@@ -217,17 +262,17 @@ def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_wo
                             current_recursion_depth += 1
                             if current_recursion_depth > MAX_RECURSION_DEPTH:
                                 raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                            return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate) # Pass exploration_rate
+                            return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
                     else: # Phrase became empty after pop, restart
                         current_recursion_depth += 1
                         if current_recursion_depth > MAX_RECURSION_DEPTH:
                             raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                        return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate) # Pass exploration_rate
+                        return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
                 else: # Ending is restricted or free, just end it at max_length
                     return phrase
 
 # --- Full Quote Generation Wrapper ---
-def generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, return_raw_words=False, exploration_rate=0.0): # Added exploration_rate
+def generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, return_raw_words=False, exploration_rate=0.0, rhyme_probability=0.2): # Added rhyme_probability
     # No seed setting here, it's handled at the top level
     
     # Ensure minimum lengths are reasonable
@@ -244,17 +289,17 @@ def generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0
                 min_len1 = max(3, int(min_total_length / 2))
                 max_len1 = max(min_len1, int(max_total_length * 0.6) - 1)
 
-                part1 = generate_phrase(min_length_words=min_len1, max_length_words=max_len1, is_second_part=False, exploration_rate=exploration_rate) # Pass exploration_rate
+                part1 = generate_phrase(min_length_words=min_len1, max_length_words=max_len1, is_second_part=False, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
                 
                 remaining_length_for_part2 = max_total_length - len(part1) - 1
                 min_len2 = max(3, min_total_length - len(part1) - 1)
                 
-                part2 = generate_phrase(min_length_words=min_len2, max_length_words=remaining_length_for_part2, is_second_part=True, exploration_rate=exploration_rate) # Pass exploration_rate
+                part2 = generate_phrase(min_length_words=min_len2, max_length_words=remaining_length_for_part2, is_second_part=True, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
                 
                 full_quote_words = part1 + [','] + part2
             else:
                 # Generate single part
-                full_quote_words = generate_phrase(min_length_words=min_total_length, max_length_words=max_total_length, is_second_part=False, exploration_rate=exploration_rate) # Pass exploration_rate
+                full_quote_words = generate_phrase(min_length_words=min_total_length, max_length_words=max_total_length, is_second_part=False, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
             
             final_quote_text = ' '.join(full_quote_words).replace(' ,', ',').capitalize() + '.'
 
@@ -282,6 +327,8 @@ if __name__ == "__main__":
                         help="Path to learned parameters JSON file.")
     parser.add_argument("--exploration_rate", type=float, default=0.1, 
                         help="Probability (0.0 to 1.0) to ignore learned parameters and use heuristics for novelty.")
+    parser.add_argument("--rhyme_probability", type=float, default=0.2, 
+                        help="Probability (0.0 to 1.0) to prioritize rhyming words during generation.")
     parser.add_argument("--rate", action="store_true", 
                         help="Generate quotes and prompt for immediate interactive rating.") # Changed flag name
     parser.add_argument("--raw", action="store_true", help="Print only the quote text without labels or headers.")
@@ -297,64 +344,65 @@ if __name__ == "__main__":
         random.seed(None) # Initialize with system time for randomness
 
     LOG_FILE_PATH = "data/quotes_for_learning.csv"
+
+    def log_quote(q_id, q_text, rating="NO_RATING"):
+        file_exists = os.path.exists(LOG_FILE_PATH) and os.stat(LOG_FILE_PATH).st_size > 0
+        with open(LOG_FILE_PATH, 'a', encoding='utf-8', newline='') as f:
+            csv_writer = csv.writer(f)
+            if not file_exists:
+                csv_writer.writerow(["id", "quote", "rating"])
+            csv_writer.writerow([str(q_id), q_text, rating])
     
     # Mode: Interactive Rating
     if args.rate: # Changed check
         print(f"\n--- Interactive Quote Rating Mode ---")
         print(f"Quotes will be logged to {LOG_FILE_PATH}")
-        file_exists = os.path.exists(LOG_FILE_PATH) and os.stat(LOG_FILE_PATH).st_size > 0
-        with open(LOG_FILE_PATH, 'a', encoding='utf-8', newline='') as f:
-            csv_writer = csv.writer(f)
-            if not file_exists:
-                csv_writer.writerow(["id", "quote", "rating"]) # Write header only if file is new/empty
+        
+        for i in range(args.num_quotes):
+            quote_id = uuid.uuid4()
+            quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
+                                                        return_raw_words=True, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
+            
+            print(f"\nQuote {i+1} ({quote_id}): {quote_text}")
+            user_input = input("Rate this quote (+/- to rate, Enter to skip, q to quit): ").strip().lower() # Added q to prompt and lower()
+            
+            if user_input == 'q': # Check for quit command
+                print("Quitting interactive rating.")
+                break # Exit the loop
+            
+            rating_to_log = "NO_RATING"
+            if user_input == '+':
+                rating_to_log = '+'
+            elif user_input == '-':
+                rating_to_log = '-'
+            
+            log_quote(quote_id, quote_text, rating_to_log)
+            print(f"Rating '{rating_to_log}' recorded.")
 
-            for i in range(args.num_quotes):
-                quote_id = uuid.uuid4()
-                quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
-                                                            return_raw_words=True, exploration_rate=args.exploration_rate) # Pass exploration_rate
-                
-                print(f"\nQuote {i+1} ({quote_id}): {quote_text}")
-                user_input = input("Rate this quote (+/- to rate, Enter to skip, q to quit): ").strip().lower() # Added q to prompt and lower()
-                
-                if user_input == 'q': # Check for quit command
-                    print("Quitting interactive rating.")
-                    break # Exit the loop
-                
-                rating_to_log = "NO_RATING"
-                if user_input == '+':
-                    rating_to_log = '+'
-                elif user_input == '-':
-                    rating_to_log = '-'
-                
-                csv_writer.writerow([str(quote_id), quote_text, rating_to_log])
-                print(f"Rating '{rating_to_log}' recorded.")
         print("\n--- Interactive Rating Complete ---")
-        print(f"Run 'python3 learner.py --input_csv {LOG_FILE_PATH}' to update learned parameters.")
+        print(f"Run 'python3 src/learner.py --input_csv {LOG_FILE_PATH}' to update learned parameters.")
     
     # Mode: Batch Logging (original --learn functionality)
     elif args.learn: # This will be exclusive with --rate_interactive
-        print(f"Logging quotes to {LOG_FILE_PATH} for learning...")
-        file_exists = os.path.exists(LOG_FILE_PATH) and os.stat(LOG_FILE_PATH).st_size > 0
-        with open(LOG_FILE_PATH, 'a', encoding='utf-8', newline='') as f:
-            csv_writer = csv.writer(f)
-            if not file_exists:
-                csv_writer.writerow(["id", "quote", "rating"]) # Write header only if file is new/empty
-
-            print(f"\nGenerating {args.num_quotes} quotes:")
-            for i in range(args.num_quotes):
-                quote_id = uuid.uuid4()
-                quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
-                                                            return_raw_words=True, exploration_rate=args.exploration_rate) # Pass exploration_rate
-                
-                csv_writer.writerow([str(quote_id), quote_text, "NO_RATING"])
-                print(f"Quote {i+1} ({quote_id}): {quote_text}")
+        print(f"Logging {args.num_quotes} quotes to {LOG_FILE_PATH} for later rating...")
+        for i in range(args.num_quotes):
+            quote_id = uuid.uuid4()
+            quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
+                                                        return_raw_words=True, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
+            
+            log_quote(quote_id, quote_text, "NO_RATING")
+            print(f"Quote {i+1} ({quote_id}): {quote_text}")
     
-    # Default Mode: Just Generate and Print (no logging)
+    # Default Mode: Generate, Print AND Log for later rating
     else:
         if not args.raw:
-            print(f"\nGenerating {args.num_quotes} quotes:")
+            print(f"\nGenerating {args.num_quotes} quotes (auto-logged to {LOG_FILE_PATH}):")
         for i in range(args.num_quotes):
-            quote_text = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, exploration_rate=args.exploration_rate) # Pass exploration_rate
+            quote_id = uuid.uuid4()
+            quote_text = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
+            
+            log_quote(quote_id, quote_text, "NO_RATING")
+            
             if args.raw:
                 print(quote_text)
             else:
