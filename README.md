@@ -16,9 +16,6 @@ python3 -m venv venv
 # Basic random nonsense
 python main.py generate --num_quotes 5
 
-# Act like you're from a specific theme
-python main.py generate --theme general
-
 # Make a whole block of "wisdom" (a paragraph)
 python main.py generate --paragraph
 
