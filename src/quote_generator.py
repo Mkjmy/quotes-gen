@@ -1,409 +1,177 @@
 import random
-import re
 import argparse
-import uuid
 import os
 import json
-import csv # Import csv module
+import subprocess
+from datetime import datetime
 
-# Import POS tagging logic and data from pos_tagger.py
-from pos_tagger import all_words, assign_role_by_pattern, FUNC, PRON, MODAL, DET
+from pos_tagger import all_words, assign_role_by_pattern
 
+LEARNED_DATA = {"themes": {}}
+CURRENT_THEME = "general"
 
-# --- Rhyme Indexing ---
-RHYME_INDEX = {}
-
-def build_rhyme_index():
-    global RHYME_INDEX
-    for word in all_words:
-        if len(word) >= 3:
-            suffix = word[-2:].lower()
-            if suffix not in RHYME_INDEX:
-                RHYME_INDEX[suffix] = []
-            RHYME_INDEX[suffix].append(word)
-
-build_rhyme_index()
-
-
-# --- Learned Parameters (Initially empty, to be loaded) ---
-LEARNED_POS_ADJACENCY_SCORES = {}
-LEARNED_WORD_ADJACENCY_SCORES = {}
-LEARNED_POS_ENDING_PROBABILITIES = {}
-LEARNED_WORD_ENDING_PROBABILITIES = {}
-
-def load_learned_parameters(filepath="learned_parameters.json"):
-    global LEARNED_POS_ADJACENCY_SCORES, LEARNED_WORD_ADJACENCY_SCORES
-    global LEARNED_POS_ENDING_PROBABILITIES, LEARNED_WORD_ENDING_PROBABILITIES
+def load_learned_parameters(filepath="models/learned_parameters.json"):
+    global LEARNED_DATA
     if os.path.exists(filepath):
         try:
             with open(filepath, 'r') as f:
-                params = json.load(f)
-                LEARNED_POS_ADJACENCY_SCORES = {k: v for k, v in params.get("pos_adjacency_scores", {}).items()}
-                LEARNED_WORD_ADJACENCY_SCORES = {k: v for k, v in params.get("word_adjacency_scores", {}).items()}
-                LEARNED_POS_ENDING_PROBABILITIES = params.get("pos_ending_probabilities", {})
-                LEARNED_WORD_ENDING_PROBABILITIES = params.get("word_ending_probabilities", {})
-        except json.JSONDecodeError:
-            print(f"Error decoding learned parameters from {filepath}. Using default.")
+                LEARNED_DATA = json.load(f)
         except Exception as e:
-            print(f"An unexpected error occurred loading learned parameters: {e}. Using default.")
+            print(f"Error loading parameters: {e}")
 
+def get_theme_dict():
+    return LEARNED_DATA.get("themes", {}).get(CURRENT_THEME, {})
 
-# --- Adjacency Logic ---
-# Probabilities for restricted pairs (0 to 1)
-RESTRICTED_PROB = 0.2  # 20% chance for restricted pairs
-VING_VING_RESTRICTED_PROB = 0.1 # Even lower chance for VING + VING
+def generate_phrase(min_len=4, max_len=12, drift_chance=0.2):
+    theme_dict = get_theme_dict()
+    vocab = theme_dict.get("vocab", [])
+    trigrams = theme_dict.get("word_trigrams", {})
+    pos_adj = theme_dict.get("pos_adjacency", {})
+    pos_ends = theme_dict.get("pos_endings", {})
 
-def check_adjacency(prev_word, prev_pos, current_word, current_pos, exploration_rate): # Added exploration_rate
-    # Rule: Absolute forbidden POS rules (these are ALWAYS active, cannot be overridden by learning or exploration)
-    if (prev_pos == 'FUNC' and prev_word and prev_word.lower() == 'to' and current_pos == 'VING') or \
-       (prev_pos == 'MODAL' and current_pos == 'VING') or \
-       (prev_pos == 'VING' and current_pos == 'MODAL') or \
-       (prev_pos == 'FUNC' and current_pos in ['FUNC', 'MODAL']) or \
-       (prev_pos == 'MODAL' and current_pos in ['FUNC', 'MODAL']) or \
-       (prev_pos == 'PRON' and current_pos == 'PRON') or \
-       (prev_pos == 'DET' and current_pos == 'DET'):
-        return False, 0.0
-
-    # If exploring, bypass learned parameters and go straight to heuristics
-    if random.random() < exploration_rate:
-        # Fall through to original heuristic rules below
-        pass
-    else:
-        # --- Priority 1: Learned Word-level Adjacency Score ---
-        word_pair_key_str = f"{prev_word},{current_word}"
-        if word_pair_key_str in LEARNED_WORD_ADJACENCY_SCORES:
-            score = LEARNED_WORD_ADJACENCY_SCORES[word_pair_key_str]
-            if score <= 0: return False, 0.0
-            return True, max(0.01, min(1.0, score))
-
-        # --- Priority 2: Learned POS-level Adjacency Score ---
-        pos_pair_key_str = f"{prev_pos},{current_pos}"
-        if pos_pair_key_str in LEARNED_POS_ADJACENCY_SCORES:
-            score = LEARNED_POS_ADJACENCY_SCORES[pos_pair_key_str]
-            if score <= 0: return False, 0.0
-            return True, max(0.01, min(1.0, score))
-
-
-    # --- Priority 3 (or fallback during exploration): Original heuristic POS rules and default probabilities ---
-    if (prev_pos == 'NOUN' and current_pos == 'NOUN') or \
-       (prev_pos == 'ADJ' and current_pos == 'ADJ') or \
-       (prev_pos == 'ADV' and current_pos == 'ADV'):
-        return True, RESTRICTED_PROB
-    if prev_pos == 'VING' and current_pos == 'VING':
-        return True, VING_VING_RESTRICTED_PROB
-
-    # Preferred pairs (always 1.0 prob)
-    if (prev_pos == 'ADJ' and current_pos == 'NOUN') or \
-       (prev_pos == 'VING' and current_pos == 'NOUN') or \
-       (prev_pos == 'ADV' and current_pos == 'ADJ') or \
-       (prev_pos == 'NOUN' and current_pos == 'VING'):
-        return True, 1.0
-
-    # All other pairs get a default probability
-    return True, 0.5
-
-
-# --- Ending Logic ---
-def check_ending_viability(last_word, last_pos, exploration_rate): # Added exploration_rate
-    # Rule: Absolute forbidden POS endings (these are ALWAYS active, cannot be overridden by learning or exploration)
-    if last_pos in ['FUNC', 'MODAL', 'PRON', 'DET']:
-        return False, 0.0
-
-    # If exploring, bypass learned parameters and go straight to heuristics
-    if random.random() < exploration_rate:
-        # Fall through to original heuristic rules below
-        pass
-    else:
-        # --- Priority 1: Learned Word-level Ending Probability ---
-        if last_word in LEARNED_WORD_ENDING_PROBABILITIES:
-            prob = LEARNED_WORD_ENDING_PROBABILITIES[last_word]
-            return True, max(0.01, min(1.0, prob))
-
-        # --- Priority 2: Learned POS-level Ending Probability ---
-        if last_pos in LEARNED_POS_ENDING_PROBABILITIES:
-            prob = LEARNED_POS_ENDING_PROBABILITIES[last_pos]
-            return True, max(0.01, min(1.0, prob)) # Cap probability
-
-    # --- Priority 3 (or fallback during exploration): Original heuristic POS rules and default probabilities ---
-    if last_pos in ['VERB', 'VING', 'ADV']:
-        return True, 0.3
-
-    if last_pos in ['NOUN', 'ADJ']:
-        return True, 1.0
-
-    return False, 0.0 # Should not be reached
-
-
-# --- Phrase Generation Logic ---
-def generate_phrase(min_length_words=3, max_length_words=10, max_attempts_per_word=20, is_second_part=False, exploration_rate=0.0, rhyme_probability=0.2): # Added rhyme_probability
     phrase = []
-    prev_word = None
-    prev_pos = None
-    word_pool_list = list(all_words) # all_words is from pos_tagger.py
+    w_prev1, w_prev2 = None, None
 
-    # To prevent infinite recursion in extreme cases where rules are too strict for a small pool
-    current_recursion_depth = 0
-    MAX_RECURSION_DEPTH = 5
+    for i in range(max_len):
+        # 1. Candidate Selection
+        candidates = []
+        
+        # Priority A: Trigram (from learned data)
+        if w_prev2 and w_prev1:
+            prefix = f"{w_prev2},{w_prev1},"
+            tri_matches = [k.split(',')[-1] for k in trigrams.keys() if k.startswith(prefix)]
+            candidates.extend(tri_matches * 5) # Weight trigrams heavily
 
-    while True:
-        current_word = None
-        current_pos = None
-        attempt_count = 0
+        # Priority B: Philosophical Vocab (Gravity)
+        if not candidates or random.random() < 0.3:
+            candidates.extend(random.sample(vocab, min(len(vocab), 20)))
 
-        while attempt_count < max_attempts_per_word:
-            attempt_count += 1
+        # Priority C: The Leap (Drift into the unknown/vo tri)
+        if random.random() < drift_chance:
+            candidates.extend(random.sample(list(all_words), 10))
+
+        if not candidates: candidates = random.sample(list(all_words), 5)
+
+        # 2. Validation & Scoring
+        best_word = None
+        best_score = -1
+        
+        random.shuffle(candidates)
+        for cand in candidates[:30]:
+            if cand == w_prev1: continue
             
-            word_candidate = None
-            candidate_pos = None
+            c_pos = assign_role_by_pattern(cand)
+            p1_pos = assign_role_by_pattern(w_prev1) if w_prev1 else None
             
-            # --- Rhyme Prioritization (New Feature) ---
-            # Use rhyme_probability to decide whether to even attempt rhyming for this word
-            if prev_word and len(prev_word) >= 3 and random.random() < rhyme_probability:
-                suffix = prev_word[-2:].lower()
-                if suffix in RHYME_INDEX:
-                    # Attempt to find a suitable rhyming word up to 10 times
-                    for _ in range(10):
-                        temp_candidate = random.choice(RHYME_INDEX[suffix])
-                        if temp_candidate == prev_word:
-                            continue
-                        
-                        temp_pos = assign_role_by_pattern(temp_candidate)
-                        
-                        # Check if this rhyming candidate fits the logic
-                        is_allowed, probability = check_adjacency(prev_word, prev_pos, temp_candidate, temp_pos, exploration_rate)
-                        if is_allowed and random.random() < probability:
-                            word_candidate = temp_candidate
-                            candidate_pos = temp_pos
-                            break # Found a suitable rhyming word
+            # POS logic check
+            score = 0.5
+            if p1_pos:
+                pos_key = f"{p1_pos},{c_pos}"
+                score = pos_adj.get(pos_key, 0.3)
+                # Hard rules
+                if p1_pos == 'FUNC' and c_pos == 'FUNC': score *= 0.1
+                if p1_pos == c_pos and p1_pos in ['PRON', 'DET', 'MODAL']: score *= 0.0
             
-            if word_candidate:
-                current_word = word_candidate
-                current_pos = candidate_pos
-                break # Exit the attempt loop as we found our word
+            # Start word check
+            if not phrase and c_pos in ['FUNC', 'MODAL', 'DET']: score *= 0.1
 
-            # --- Fallback: Original Random Choice ---
-            word_candidate = random.choice(word_pool_list)
+            if score > best_score:
+                best_score = score
+                best_word = cand
+            if best_score > 0.8 and random.random() < 0.7: break
 
-            if prev_word is not None and word_candidate == prev_word:
-                continue
+        if not best_word: break
+        
+        phrase.append(best_word)
+        w_prev2, w_prev1 = w_prev1, best_word
 
-            candidate_pos = assign_role_by_pattern(word_candidate) # assign_role_by_pattern is from pos_tagger.py
-
-            # Rule for the very first word of this phrase/segment
-            if not phrase:
-                # If it's the start of the whole quote or the start of the second part (after comma)
-                # Avoid starting with FUNC, MODAL, DET
-                if candidate_pos in ['FUNC', 'MODAL', 'DET']:
-                    continue
+        # 3. Dynamic Ending
+        if len(phrase) >= min_len:
+            last_pos = assign_role_by_pattern(phrase[-1])
+            end_prob = pos_ends.get(last_pos, 0.1)
+            if last_pos in ['FUNC', 'DET', 'MODAL']: end_prob = 0
             
-            # Adjacency check
-            if prev_pos is not None:
-                is_allowed, probability = check_adjacency(prev_word, prev_pos, word_candidate, candidate_pos, exploration_rate) # Pass exploration_rate
-                if not is_allowed:
-                    continue
-                if random.random() > probability:
-                    continue
+            if random.random() < end_prob:
+                break
+                
+    return phrase
 
-            current_word = word_candidate
-            current_pos = candidate_pos
-            break
-
-        if current_word is None:
-            # Backtrack
-            if phrase:
-                phrase.pop()
-                prev_word = phrase[-1] if phrase else None
-                prev_pos = assign_role_by_pattern(prev_word) if prev_word else None
-                continue
-            else:
-                # If we couldn't even start, rules are too strict. Indicate failure or restart.
-                current_recursion_depth += 1
-                if current_recursion_depth > MAX_RECURSION_DEPTH:
-                    raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
-
-        phrase.append(current_word)
-        prev_word = current_word
-        prev_pos = assign_role_by_pattern(prev_word)
-
-        # Check if we should end this phrase/segment
-        if len(phrase) >= min_length_words:
-            is_end_viable, prob_to_end = check_ending_viability(prev_word, prev_pos, exploration_rate) # Pass exploration_rate
-            if is_end_viable and random.random() < prob_to_end:
-                return phrase # Return raw word list
-            elif len(phrase) >= max_length_words:
-                # Force end if max length reached, try to make it viable if possible
-                if not is_end_viable and prob_to_end == 0.0:
-                    # If strictly forbidden to end here, try backtracking once to find an end.
-                    if phrase:
-                        phrase.pop()
-                        prev_word = phrase[-1] if phrase else None
-                        prev_pos = assign_role_by_pattern(prev_word) if prev_word else None
-                        # Try to find a word that allows ending from this new state
-                        temp_phrase_start = list(phrase) # Base for new sub-generation
-                        temp_prev_word = prev_word
-                        temp_prev_pos = assign_role_by_pattern(temp_prev_word) if temp_prev_word else None
-                        found_ending_word = False
-                        for _ in range(max_attempts_per_word):
-                            end_word_candidate = random.choice(word_pool_list)
-                            if temp_prev_word is not None and end_word_candidate == temp_prev_word:
-                                continue
-                            end_candidate_pos = assign_role_by_pattern(end_word_candidate)
-                            is_allowed, probability = check_adjacency(temp_prev_word, temp_prev_pos, end_word_candidate, end_candidate_pos, exploration_rate) # Pass exploration_rate
-                            if is_allowed and random.random() < probability:
-                                end_viable, _ = check_ending_viability(end_word_candidate, end_candidate_pos, exploration_rate) # Pass exploration_rate
-                                if end_viable:
-                                    temp_phrase_start.append(end_word_candidate)
-                                    found_ending_word = True
-                                    return temp_phrase_start # Return phrase with found ending
-                        
-                        if not found_ending_word:
-                            # If failed to find a good ending word after backtracking
-                            current_recursion_depth += 1
-                            if current_recursion_depth > MAX_RECURSION_DEPTH:
-                                raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                            return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
-                    else: # Phrase became empty after pop, restart
-                        current_recursion_depth += 1
-                        if current_recursion_depth > MAX_RECURSION_DEPTH:
-                            raise RecursionError("Max phrase generation recursion depth reached. Rules too strict or word pool too small.")
-                        return generate_phrase(min_length_words, max_length_words, max_attempts_per_word, is_second_part, exploration_rate, rhyme_probability) # Pass rhyme_probability
-                else: # Ending is restricted or free, just end it at max_length
-                    return phrase
-
-# --- Full Quote Generation Wrapper ---
-def generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, return_raw_words=False, exploration_rate=0.0, rhyme_probability=0.2): # Added rhyme_probability
-    # No seed setting here, it's handled at the top level
+def generate_full_quote(theme="general"):
+    global CURRENT_THEME
+    CURRENT_THEME = theme
     
-    # Ensure minimum lengths are reasonable
-    min_total_length = max(min_total_length, 6) # At least 6 words for a meaningful quote, especially two-part
-    max_total_length = max(max_total_length, min_total_length + 2) # Ensure max is at least min + buffer
-
-    # Try generating up to 3 times for a full quote if specific part generation fails
-    for _ in range(3):
-        try:
-            is_two_part = random.random() < two_part_prob
-            
-            if is_two_part:
-                # Generate two parts
-                min_len1 = max(3, int(min_total_length / 2))
-                max_len1 = max(min_len1, int(max_total_length * 0.6) - 1)
-
-                part1 = generate_phrase(min_length_words=min_len1, max_length_words=max_len1, is_second_part=False, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
-                
-                remaining_length_for_part2 = max_total_length - len(part1) - 1
-                min_len2 = max(3, min_total_length - len(part1) - 1)
-                
-                part2 = generate_phrase(min_length_words=min_len2, max_length_words=remaining_length_for_part2, is_second_part=True, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
-                
-                full_quote_words = part1 + [','] + part2
-            else:
-                # Generate single part
-                full_quote_words = generate_phrase(min_length_words=min_total_length, max_length_words=max_total_length, is_second_part=False, exploration_rate=exploration_rate, rhyme_probability=rhyme_probability) # Pass rhyme_probability
-            
-            final_quote_text = ' '.join(full_quote_words).replace(' ,', ',').capitalize() + '.'
-
-            if return_raw_words:
-                return final_quote_text, full_quote_words # Return raw word list for learner
-            else:
-                return final_quote_text
-        except RecursionError:
-            # If a part generation failed, try the whole full quote generation again
-            continue # Loop will re-attempt
-    
-    # If all attempts fail, return a fallback message
-    if return_raw_words:
-        return "Could not generate a quote due to strict rules or limited word pool.", []
+    # Sometimes a single flow, sometimes a complex one with a comma
+    if random.random() < 0.6:
+        p1 = generate_phrase(min_len=4, max_len=8, drift_chance=0.15)
+        p2 = generate_phrase(min_len=3, max_len=6, drift_chance=0.3)
+        full = p1 + [","] + p2
     else:
-        return "Could not generate a quote due to strict rules or limited word pool."
+        full = generate_phrase(min_len=6, max_len=12, drift_chance=0.2)
+        
+    return " ".join(full).replace(" ,", ",").capitalize() + "."
 
+def generate_paragraph(theme="general", num_sentences=8):
+    transitions = ["Moreover, ", "Thus, ", "Yet, ", "In the end, ", "Therefore, ", "Consequently, ", "Simply put, ", "Indeed, ", "Beyond this, "]
+    paragraph = []
+    for i in range(num_sentences):
+        sentence = generate_full_quote(theme=theme)
+        if i > 0 and random.random() < 0.5:
+            trans = random.choice(transitions)
+            sentence = trans + sentence[0].lower() + sentence[1:]
+        paragraph.append(sentence)
+    return " ".join(paragraph)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate grammatically structured quotes.")
-    parser.add_argument("--learn", action="store_true", help="Log generated quotes to a file for learning.")
-    parser.add_argument("--seed", type=int, help="Provide an integer seed for reproducible quote generation.")
-    parser.add_argument("--num_quotes", type=int, default=5, help="Number of quotes to generate.")
-    parser.add_argument("--learned_params", type=str, default="models/learned_parameters.json", 
-                        help="Path to learned parameters JSON file.")
-    parser.add_argument("--exploration_rate", type=float, default=0.1, 
-                        help="Probability (0.0 to 1.0) to ignore learned parameters and use heuristics for novelty.")
-    parser.add_argument("--rhyme_probability", type=float, default=0.2, 
-                        help="Probability (0.0 to 1.0) to prioritize rhyming words during generation.")
-    parser.add_argument("--rate", action="store_true", 
-                        help="Generate quotes and prompt for immediate interactive rating.") # Changed flag name
-    parser.add_argument("--raw", action="store_true", help="Print only the quote text without labels or headers.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num_quotes", type=int, default=5)
+    parser.add_argument("--theme", default="general")
+    parser.add_argument("--paragraph", action="store_true")
+    parser.add_argument("--sentences", type=int, default=8, help="Number of sentences in the paragraph")
+    parser.add_argument("--svg", action="store_true", help="Export to a stylish SVG image")
+    parser.add_argument("--image", action="store_true", help="Export to a professional PNG image (requires venv)")
     args = parser.parse_args()
 
-    # Load learned parameters if they exist
-    load_learned_parameters(args.learned_params)
-
-    # Set the seed once for the entire sequence of quotes if provided
-    if args.seed is not None:
-        random.seed(args.seed)
-    else:
-        random.seed(None) # Initialize with system time for randomness
-
-    LOG_FILE_PATH = "data/quotes_for_learning.csv"
-
-    def log_quote(q_id, q_text, rating="NO_RATING"):
-        file_exists = os.path.exists(LOG_FILE_PATH) and os.stat(LOG_FILE_PATH).st_size > 0
-        with open(LOG_FILE_PATH, 'a', encoding='utf-8', newline='') as f:
-            csv_writer = csv.writer(f)
-            if not file_exists:
-                csv_writer.writerow(["id", "quote", "rating"])
-            csv_writer.writerow([str(q_id), q_text, rating])
+    load_learned_parameters()
     
-    # Mode: Interactive Rating
-    if args.rate: # Changed check
-        print(f"\n--- Interactive Quote Rating Mode ---")
-        print(f"Quotes will be logged to {LOG_FILE_PATH}")
+    # Verify theme
+    if args.theme not in LEARNED_DATA.get("themes", {}):
+        args.theme = "general" if "general" in LEARNED_DATA.get("themes", {}) else list(LEARNED_DATA.get("themes", {}).keys())[0]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if args.paragraph:
+        final_text = generate_paragraph(theme=args.theme, num_sentences=args.sentences)
+        print(f"\n--- [THEME: {args.theme.upper()}] DEEP PERSPECTIVE ---\n")
+        print(final_text)
+        print("\n" + "="*60 + "\n")
         
-        for i in range(args.num_quotes):
-            quote_id = uuid.uuid4()
-            quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
-                                                        return_raw_words=True, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
-            
-            print(f"\nQuote {i+1} ({quote_id}): {quote_text}")
-            user_input = input("Rate this quote (+/- to rate, Enter to skip, q to quit): ").strip().lower() # Added q to prompt and lower()
-            
-            if user_input == 'q': # Check for quit command
-                print("Quitting interactive rating.")
-                break # Exit the loop
-            
-            rating_to_log = "NO_RATING"
-            if user_input == '+':
-                rating_to_log = '+'
-            elif user_input == '-':
-                rating_to_log = '-'
-            
-            log_quote(quote_id, quote_text, rating_to_log)
-            print(f"Rating '{rating_to_log}' recorded.")
-
-        print("\n--- Interactive Rating Complete ---")
-        print(f"Run 'python3 src/learner.py --input_csv {LOG_FILE_PATH}' to update learned parameters.")
-    
-    # Mode: Batch Logging (original --learn functionality)
-    elif args.learn: # This will be exclusive with --rate_interactive
-        print(f"Logging {args.num_quotes} quotes to {LOG_FILE_PATH} for later rating...")
-        for i in range(args.num_quotes):
-            quote_id = uuid.uuid4()
-            quote_text, raw_words = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, 
-                                                        return_raw_words=True, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
-            
-            log_quote(quote_id, quote_text, "NO_RATING")
-            print(f"Quote {i+1} ({quote_id}): {quote_text}")
-    
-    # Default Mode: Generate, Print AND Log for later rating
+        base_name = f"paragraph_{args.theme.upper()}_{timestamp}"
+        if args.svg:
+            from svg_generator import generate_svg
+            generate_svg(final_text, theme=args.theme.upper(), output_path=f"{base_name}.svg")
+        if args.image:
+            output_dir = "output_images"
+            if not os.path.exists(output_dir): os.makedirs(output_dir)
+            out_path = os.path.join(output_dir, f"{base_name}.png")
+            venv_python = os.path.join(os.getcwd(), "venv", "bin", "python")
+            if os.path.exists(venv_python):
+                subprocess.run([venv_python, "src/image_generator.py", final_text, args.theme.upper(), out_path, "Paragraph"])
     else:
-        if not args.raw:
-            print(f"\nGenerating {args.num_quotes} quotes (auto-logged to {LOG_FILE_PATH}):")
+        output_dir = "output_images"
+        if args.image and not os.path.exists(output_dir): os.makedirs(output_dir)
+        venv_python = os.path.join(os.getcwd(), "venv", "bin", "python")
+        import uuid
+
         for i in range(args.num_quotes):
-            quote_id = uuid.uuid4()
-            quote_text = generate_full_quote(min_total_length=8, max_total_length=20, two_part_prob=0.6, exploration_rate=args.exploration_rate, rhyme_probability=args.rhyme_probability) # Pass rhyme_probability
+            final_text = generate_full_quote(theme=args.theme)
+            q_id = str(uuid.uuid4())
+            print(f"[{args.theme.upper()}] {final_text}")
             
-            log_quote(quote_id, quote_text, "NO_RATING")
-            
-            if args.raw:
-                print(quote_text)
-            else:
-                print(f"Quote {i+1}: {quote_text}")
+            base_name = f"quote_{args.theme.upper()}_{timestamp}_{i+1}"
+            if args.svg:
+                from svg_generator import generate_svg
+                generate_svg(final_text, theme=args.theme.upper(), output_path=f"{base_name}.svg")
+            if args.image:
+                out_path = os.path.join(output_dir, f"{base_name}.png")
+                if os.path.exists(venv_python):
+                    subprocess.run([venv_python, "src/image_generator.py", final_text, args.theme.upper(), out_path, q_id])
