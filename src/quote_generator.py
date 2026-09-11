@@ -390,17 +390,20 @@ def _is_vowel_sound(word):
 def quote_to_seed(text):
     """Encode a quote into a reproduceable seed (no mapping file needed)."""
     raw = text.strip().encode("utf-8")
-    return "q:" + base64.urlsafe_b64encode(raw).decode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
 def seed_to_quote(seed):
     """Recover the exact quote encoded inside a seed, or None if not a quote-seed."""
-    if not seed or not seed.startswith("q:"):
+    if not seed:
         return None
     try:
-        return base64.urlsafe_b64decode(seed[2:]).decode("utf-8").strip()
+        q = base64.urlsafe_b64decode(seed.encode("ascii")).decode("utf-8").strip()
     except Exception:
         return None
+    if len(q) < 10 or q[-1] not in ".!?":
+        return None
+    return q
 
 
 def fix_articles(text):
@@ -512,6 +515,7 @@ if __name__ == "__main__":
     parser.add_argument("--image", action="store_true", help="Export to a professional PNG image (requires venv)")
     parser.add_argument("--seed", help="Reproduce a specific quote from its seed (use --to-seed to make one)")
     parser.add_argument("--to-seed", help="Print the seed for a given quote, then exit")
+    parser.add_argument("--quote", help="Pump an outside quote straight through the pipeline (seed + optional svg/image)")
     args = parser.parse_args()
 
     if args.to_seed:
@@ -555,7 +559,9 @@ if __name__ == "__main__":
         import uuid
 
         seeded_quotes = []
-        if args.seed:
+        if args.quote:
+            seeded_quotes = [args.quote]
+        elif args.seed:
             q = seed_to_quote(args.seed)
             if q is not None:
                 seeded_quotes = [q]
