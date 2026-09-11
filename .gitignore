@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+venv/
+output_images/
+models/big_pools.json
+paragraph_*.svg

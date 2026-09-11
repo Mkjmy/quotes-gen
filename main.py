@@ -21,6 +21,7 @@ if __name__ == "__main__":
     # Subparser for generate
     gen_parser = subparsers.add_parser("generate", help="Generate structured quotes")
     gen_parser.add_argument("--num_quotes", type=int, default=5)
+    gen_parser.add_argument("--chaos", type=float, help="0..1 how unhinged the quotes get")
     gen_parser.add_argument("--rate", action="store_true", help="Rate quotes interactively")
     gen_parser.add_argument("--raw", action="store_true", help="Print only the quote text")
     gen_parser.add_argument("--theme", type=str, default="general", help="Theme to use for generation")
@@ -40,6 +41,7 @@ if __name__ == "__main__":
     if args.command == "generate":
         pass_args = []
         if args.num_quotes: pass_args += ["--num_quotes", str(args.num_quotes)]
+        if args.chaos is not None: pass_args += ["--chaos", str(args.chaos)]
         if args.rate: pass_args.append("--rate")
         if args.raw: pass_args.append("--raw")
         if args.theme: pass_args += ["--theme", args.theme]
