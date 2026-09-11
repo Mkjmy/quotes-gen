@@ -3,6 +3,8 @@ import argparse
 import os
 import json
 import re
+import base64
+import sys
 import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -385,6 +387,22 @@ def _is_vowel_sound(word):
         return True
     return False
 
+def quote_to_seed(text):
+    """Encode a quote into a reproduceable seed (no mapping file needed)."""
+    raw = text.strip().encode("utf-8")
+    return "q:" + base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def seed_to_quote(seed):
+    """Recover the exact quote encoded inside a seed, or None if not a quote-seed."""
+    if not seed or not seed.startswith("q:"):
+        return None
+    try:
+        return base64.urlsafe_b64decode(seed[2:]).decode("utf-8").strip()
+    except Exception:
+        return None
+
+
 def fix_articles(text):
     words = text.split()
     out = []
@@ -492,7 +510,13 @@ if __name__ == "__main__":
     parser.add_argument("--raw", action="store_true", help="Print only the quote text")
     parser.add_argument("--svg", action="store_true", help="Export to a stylish SVG image")
     parser.add_argument("--image", action="store_true", help="Export to a professional PNG image (requires venv)")
+    parser.add_argument("--seed", help="Reproduce a specific quote from its seed (use --to-seed to make one)")
+    parser.add_argument("--to-seed", help="Print the seed for a given quote, then exit")
     args = parser.parse_args()
+
+    if args.to_seed:
+        print(quote_to_seed(args.to_seed))
+        sys.exit(0)
 
     load_learned_parameters()
 
@@ -530,8 +554,14 @@ if __name__ == "__main__":
         venv_python = os.path.join(os.getcwd(), "venv", "bin", "python")
         import uuid
 
-        for i in range(args.num_quotes):
-            final_text = generate_full_quote(theme=args.theme, chaos=chaos)
+        seeded_quotes = []
+        if args.seed:
+            q = seed_to_quote(args.seed)
+            if q is not None:
+                seeded_quotes = [q]
+
+        for i in range(len(seeded_quotes) or args.num_quotes):
+            final_text = seeded_quotes[i] if seeded_quotes else generate_full_quote(theme=args.theme, chaos=chaos)
             q_id = str(uuid.uuid4())
             print(f"[{args.theme.upper()}|chaos{chaos:.2f}] {final_text}" if not args.raw else final_text)
 
