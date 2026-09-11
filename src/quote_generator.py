@@ -4,6 +4,7 @@ import os
 import json
 import re
 import base64
+import hashlib
 import sys
 import subprocess
 from collections import Counter, defaultdict
@@ -236,6 +237,7 @@ def pick_slot(pos, theme_pools, chaos):
 # grammar comes straight from real quotes while the meaning goes sideways.
 # ---------------------------------------------------------------------------
 _MARKOV = None
+_SEED_MAP_PATH = "models/seed_map.json"
 _CORPUS_FILES = [
     "data/my_quotes/general/fortune_corpus.txt",
     "data/my_quotes/general/real_quotes.txt",
@@ -388,22 +390,60 @@ def _is_vowel_sound(word):
     return False
 
 def quote_to_seed(text):
-    """Encode a quote into a reproduceable seed (no mapping file needed)."""
-    raw = text.strip().encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii")
+    """Map a quote to a fixed-length seed (always 67 chars).
+
+    Reversible only through the seed registry (models/seed_map.json), not by
+    the seed itself. Hash is deterministic, so the same quote always yields the
+    same 67-char seed on any machine.
+    """
+    seed = _seed_code(text)
+    registry = _load_seed_registry()
+    if seed not in registry:
+        registry[seed] = text.strip()
+        _save_seed_registry(registry)
+    return seed
 
 
 def seed_to_quote(seed):
-    """Recover the exact quote encoded inside a seed, or None if not a quote-seed."""
+    """Recover the quote behind a 67-char seed, or None if unknown."""
     if not seed:
         return None
+    seed = seed.strip()
+    registry = _load_seed_registry()
+    q = registry.get(seed)
+    if q:
+        return q
     try:
         q = base64.urlsafe_b64decode(seed.encode("ascii")).decode("utf-8").strip()
+        if len(q) >= 10 and q[-1] in ".!?":
+            return q
     except Exception:
-        return None
-    if len(q) < 10 or q[-1] not in ".!?":
-        return None
-    return q
+        pass
+    return None
+
+
+def _seed_code(text):
+    """50-byte blake2b -> urlsafe base64, unpadded -> exactly 67 chars."""
+    digest = hashlib.blake2b(text.strip().encode("utf-8"), digest_size=50).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _load_seed_registry():
+    path = _SEED_MAP_PATH
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_seed_registry(registry):
+    try:
+        os.makedirs(os.path.dirname(_SEED_MAP_PATH), exist_ok=True)
+        with open(_SEED_MAP_PATH, "w", encoding="utf-8") as f:
+            json.dump(registry, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
 
 
 def fix_articles(text):
