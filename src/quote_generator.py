@@ -31,6 +31,15 @@ _JUNK_TOKENS = {
     "knghtbrd", "swanson", "smirnoff", "hardcore", "paradoxum",
     "dells", "hanukkah", "pcline", "gosper", "linus", "bankhead",
 }
+_TECH_WORDS = {
+    "debian", "linux", "kernel", "perl", "python", "cobol", "fortran",
+    "program", "programs", "programmer", "programmers", "programming",
+    "unix", "sysadmin", "sysadmins", "hacker", "hackers", "hacking",
+    "glibc", "gcc", "irc", "emacs", "windows", "microsoft", "computer",
+    "computers", "software", "hardware", "shell", "compiler", "code",
+    "debug", "debugging", "bugs", "elisp", "bsd", "cdrom", "disk",
+    "dist", "byte", "bytes", "modem", "internet", "rec.games",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +70,9 @@ def _clean_corpus_sentences(theme="general"):
                 continue
             if any(ch.isdigit() for ch in orig):
                 continue
-            if any(not (ch.isalpha() or ch.isspace() or ch in ".,!?;:'\"" ) for ch in orig):
+            if any(not (ch.isalpha() or ch.isspace() or ch in ".,!?;-'") for ch in orig):
+                continue
+            if ":" in orig or "#" in orig:
                 continue
             if any(re.match(r"[A-Z][a-z]{2,}", w) for w in orig.split()[1:]):
                 continue
@@ -75,7 +86,7 @@ def _clean_corpus_sentences(theme="general"):
                 continue
             if toks[0] in _BAD_START:
                 continue
-            if any(w in _JUNK_TOKENS for w in toks):
+            if any(w in _JUNK_TOKENS or w in _TECH_WORDS for w in toks):
                 continue
             if not any(w in verbs or pt.assign_role_by_pattern(w) in ("VERB", "VING", "MODAL") for w in toks):
                 continue
@@ -142,6 +153,32 @@ def _next_token(m, tokens, temperature):
     return _sample([t for t, _ in items], [w for _, w in items], temperature)
 
 
+def _stitch_tokens(m, trials=40):
+    """Verbose-safety net: splice two corpus sentences into one novel sentence
+    so we never print a pre-existing quote verbatim."""
+    if not m["sents"] or len(m["sents"]) < 2:
+        return ["quiet things", "still", "need", "tending", "."]
+    for _ in range(trials):
+        a = m["sents"][random.randrange(len(m["sents"]))]
+        b = m["sents"][random.randrange(len(m["sents"]))]
+        cut_a = max(3, len(a) // 2)
+        head = a[:cut_a]
+        if head[-1] in _END_PUNCT:
+            head = head[:-1]
+        if b[-1] not in _END_PUNCT:
+            continue
+        tail = b[cut_a:]
+        while tail and tail[0] not in _END_PUNCT and tail[0] not in {",", ".", "!"}:
+            tail = tail[1:]
+        tail = tail[:30]
+        if not tail:
+            continue
+        out = head + tail
+        if len(out) >= 5 and out[-1] in _END_PUNCT and out[0] not in _BAD_START:
+            return out
+    return ["quiet things", "still", "need", "tending", "."]
+
+
 def build_sentence(theme="general", chaos=0.6):
     m = _load_markov(theme)
     temperature = 0.4 + chaos * 1.0
@@ -165,9 +202,7 @@ def build_sentence(theme="general", chaos=0.6):
                 break
         if len(toks) >= 5 and toks[-1] in _END_PUNCT:
             return toks
-    if m["sents"]:
-        return m["sents"][random.randrange(len(m["sents"]))]
-    return ["everything means something."]
+    return _stitch_tokens(m)
 
 
 # ---------------------------------------------------------------------------
@@ -308,9 +343,8 @@ def generate_phrase(theme="general", chaos=0.6):
         if sanity_check(sentence):
             return sentence
     m = _load_markov(theme)
-    if not m["sents"]:
-        return "Everything has its own silence."
-    return fix_case(fix_articles(" ".join(random.choice(m["sents"]))))
+    stitch = fix_articles(" ".join(_stitch_tokens(m)))
+    return fix_case(stitch) if sanity_check(stitch) else "Quiet things still need tending."
 
 
 def generate_full_quote(theme="general", chaos=0.6):
